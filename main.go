@@ -69,11 +69,11 @@ func main() {
 		allowed = append(allowed, "/events")
 	}
 	if *allowExec {
-		allowed = append(allowed, "/exec", "/containers")
+		allowed = append(allowed, "/exec")
 	}
 
 	log.Printf("Allowed operations: %v", allowedOps)
-	log.Printf("allowed path prefixes: %v", allowed)
+	log.Printf("Allowed path prefixes: %v", allowed)
 
 	proto, addr, err := parseListen(*listen)
 	if err != nil {
@@ -103,7 +103,7 @@ func main() {
 
 		if !isPathAllowed(r.URL.Path, allowed) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
-			log.Printf("Received request %s %s -> DENY", r.Method, r.URL.Path)
+			log.Printf("Received request %s %s -> DENY (path not allowed)", r.Method, r.URL.Path)
 			return
 		}
 

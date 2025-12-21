@@ -1,2 +1,5 @@
 # Binaries
-docker-proxy
+docker-gatekeeper
+
+# Go artifacts
+/dist
