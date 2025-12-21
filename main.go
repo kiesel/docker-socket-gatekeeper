@@ -36,7 +36,7 @@ func main() {
 
 	flag.Parse()
 
-	log.Printf("starting docker socket proxy; target=%s; listen=%s", dockerSock, *listen)
+	log.Printf("starting docker socket proxy; target=%s; listen=%s", *dockerSock, *listen)
 
 	// build allowed prefixes
 	allowed := make([]string, 0)
@@ -95,13 +95,13 @@ func main() {
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		normalized := stripVersionPrefix(r.URL.Path)
 		if !isMethodAllowed(r.Method, allowedOps) {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			log.Printf("Received request %s %s -> DENY (method not allowed)", r.Method, r.URL.Path)
 			return
 		}
-		if !isPathAllowed(normalized, allowed) {
+
+		if !isPathAllowed(r.URL.Path, allowed) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			log.Printf("Received request %s %s -> DENY", r.Method, r.URL.Path)
 			return
@@ -145,21 +145,6 @@ func parseListen(s string) (proto, addr string, err error) {
 		return "tcp", s, nil
 	}
 	return "", "", fmt.Errorf("unknown listen prefix; use unix:/path or tcp:host:port")
-}
-
-// httpRequest holds parsed HTTP request metadata
-type httpRequest struct {
-	method     string
-	path       string
-	rawHeaders []byte
-	bodyLen    int64
-}
-
-// httpResponse holds parsed HTTP response metadata
-type httpResponse struct {
-	rawHeaders []byte
-	bodyLen    int64
-	closeConn  bool
 }
 
 // stripVersionPrefix removes Docker API version prefix (e.g., /v1.40) from the path.
@@ -209,7 +194,6 @@ func isMethodAllowed(method string, allowed []string) bool {
 	return false
 }
 func isPathAllowed(path string, allowed []string) bool {
-	// strip version prefix before checking
 	normalizedPath := stripVersionPrefix(path)
 	for _, p := range allowed {
 		if strings.HasPrefix(normalizedPath, p) {
