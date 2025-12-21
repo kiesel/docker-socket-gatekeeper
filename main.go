@@ -94,15 +94,6 @@ func main() {
 		log.Fatalf("listen %s %s: %v", proto, addr, err)
 	}
 
-	// If unix, try to set socket mode to 0660 (best-effort)
-	if proto == "unix" {
-		if f, ok := ln.(*net.UnixListener); ok {
-			// can't change mode via f directly; do best-effort on file path
-			os.Chmod(addr, 0660)
-			_ = f
-		}
-	}
-
 	done := make(chan struct{})
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -136,11 +127,11 @@ func main() {
 }
 
 func parseListen(s string) (proto, addr string, err error) {
-	if strings.HasPrefix(s, "unix:") {
-		return "unix", strings.TrimPrefix(s, "unix:"), nil
+	if after, ok := strings.CutPrefix(s, "unix:"); ok {
+		return "unix", after, nil
 	}
-	if strings.HasPrefix(s, "tcp:") {
-		return "tcp", strings.TrimPrefix(s, "tcp:"), nil
+	if after, ok := strings.CutPrefix(s, "tcp:"); ok {
+		return "tcp", after, nil
 	}
 	// fallback: if it contains ':' treat as tcp host:port
 	if strings.Contains(s, ":") {
