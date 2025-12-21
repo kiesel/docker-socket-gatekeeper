@@ -39,3 +39,43 @@ $ ./docker-gatekeeper -listen unix://./docker.sock -docker-sock /var/run/docker.
  -allow-events
 ```
 
+## Run w/ traefik in Docker compose
+
+Run docker-socket-gateway alongside traefik:
+
+```yaml
+services:
+  traefik:
+    container_name: traefik
+    image: traefik:v3.6.5
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - docker-gatekeeper:/var/run/docker-gatekeeper/:ro
+
+    environment:
+      DOCKER_HOST: 'unix:///var/run/docker-gatekeeper/docker.sock'
+
+    depends_on:
+      - docker-gatekeeper
+      
+  docker-gatekeeper:
+    container_name: docker-gatekeeper
+    user: 1000:1000
+    image: ghcr.io/kiesel/docker-socket-gatekeeper:latest
+    command:
+      - -docker-sock=/var/run/docker.sock
+      - -listen=unix:/var/run/docker-gatekeeper/docker.sock
+      - -allow-read
+      - -allow-system
+      - -allow-containers
+      - -allow-events
+    read_only: true
+    group_add:
+      - 968 # docker group on target host
+
+    volumes:
+      - docker-gatekeeper:/var/run/docker-gatekeeper/:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+docker-gatekeeper can run rootless (`user: 1000:1000`), when it is added to the Docker group with `group_add`.
