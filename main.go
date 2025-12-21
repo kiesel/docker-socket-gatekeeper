@@ -1,31 +1,29 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-const (
-	defaultListen = "unix:/var/run/docker-proxy.sock"
-	dockerSock    = "/var/run/docker.sock"
-)
-
 func main() {
 	listen := flag.String("listen", "unix:/var/run/docker-proxy.sock", "listen address: prefix with 'unix:' or 'tcp:'; default unix:/var/run/docker-proxy.sock")
+	dockerSock := flag.String("docker-sock", "/var/run/docker.sock", "path to docker unix socket")
 
 	// path allow flags
-	allow := flag.String("allow", "", "comma-separated allowed path prefixes (e.g. /containers,/images)")
+	allowRead := flag.Bool("allow-read", true, "allow read-only operations (GET, HEAD) on all paths")
+	allowWrite := flag.Bool("allow-write", false, "allow write operations (POST, PUT, PATCH, DELETE) on all paths")
+
 	allowContainers := flag.Bool("allow-containers", false, "allow /containers/* paths")
 	allowImages := flag.Bool("allow-images", false, "allow /images/* paths")
 	allowVolumes := flag.Bool("allow-volumes", false, "allow /volumes/* paths")
@@ -33,18 +31,22 @@ func main() {
 	allowSwarm := flag.Bool("allow-swarm", false, "allow swarm APIs (/swarm,/services,/nodes,/secrets,/configs)")
 	allowSystem := flag.Bool("allow-system", false, "allow system APIs (/info,/version,/_ping)")
 	allowEvents := flag.Bool("allow-events", false, "allow /events")
+
 	allowExec := flag.Bool("allow-exec", false, "allow exec/attach APIs (/exec,/containers/*/exec,/containers/*/attach)")
 
 	flag.Parse()
-
-	if *listen == "" {
-		*listen = defaultListen
-	}
 
 	log.Printf("starting docker socket proxy; target=%s; listen=%s", dockerSock, *listen)
 
 	// build allowed prefixes
 	allowed := make([]string, 0)
+	allowedOps := make([]string, 0)
+	if *allowRead {
+		allowedOps = append(allowedOps, "GET", "HEAD")
+	}
+	if *allowWrite {
+		allowedOps = append(allowedOps, "POST", "PUT", "DELETE", "PATCH")
+	}
 	if *allowSystem {
 		allowed = append(allowed, "/_ping", "/version", "/info")
 	}
@@ -69,20 +71,8 @@ func main() {
 	if *allowExec {
 		allowed = append(allowed, "/exec", "/containers")
 	}
-	if *allow != "" {
-		parts := strings.Split(*allow, ",")
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if !strings.HasPrefix(p, "/") {
-				p = "/" + p
-			}
-			allowed = append(allowed, p)
-		}
-	}
 
+	log.Printf("Allowed operations: %v", allowedOps)
 	log.Printf("allowed path prefixes: %v", allowed)
 
 	proto, addr, err := parseListen(*listen)
@@ -95,35 +85,51 @@ func main() {
 		log.Fatalf("listen %s %s: %v", proto, addr, err)
 	}
 
-	done := make(chan struct{})
+	targetURL := &url.URL{Scheme: "http", Host: "docker"}
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+	proxy.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial("unix", *dockerSock)
+		},
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		normalized := stripVersionPrefix(r.URL.Path)
+		if !isMethodAllowed(r.Method, allowedOps) {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			log.Printf("Received request %s %s -> DENY (method not allowed)", r.Method, r.URL.Path)
+			return
+		}
+		if !isPathAllowed(normalized, allowed) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			log.Printf("Received request %s %s -> DENY", r.Method, r.URL.Path)
+			return
+		}
+
+		log.Printf("Received request %s %s -> ALLOW", r.Method, r.URL.Path)
+		proxy.ServeHTTP(w, r)
+	})
+
+	srv := &http.Server{Handler: handler}
+
+	// graceful shutdown
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigs
 		log.Printf("shutting down")
-		ln.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
 		if proto == "unix" {
 			os.Remove(addr)
 		}
-		close(done)
 	}()
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-done:
-				// shutdown
-				return
-			default:
-				log.Printf("accept error: %v", err)
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-		}
-
-		go handleConn(conn, allowed)
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("server error: %v", err)
 	}
 }
 
@@ -141,77 +147,6 @@ func parseListen(s string) (proto, addr string, err error) {
 	return "", "", fmt.Errorf("unknown listen prefix; use unix:/path or tcp:host:port")
 }
 
-func handleConn(client net.Conn, allowed []string) {
-	defer client.Close()
-
-	backend, err := net.Dial("unix", dockerSock)
-	if err != nil {
-		log.Printf("dial docker socket: %v", err)
-		return
-	}
-	defer backend.Close()
-
-	clientReader := bufio.NewReader(client)
-	backendReader := bufio.NewReader(backend)
-
-	// relay loop: continuously validate and forward requests
-	for {
-		// read request from client
-		req, err := readHTTPRequest(clientReader)
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			log.Printf("error reading request: %v", err)
-			return
-		}
-
-		// check if path is allowed
-		if !isPathAllowed(req.path, allowed) {
-			log.Printf("denied request: %s %s (path not allowed)", req.method, req.path)
-			// send 403 and close
-			forbidden := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-			client.Write([]byte(forbidden))
-			return
-		}
-
-		log.Printf("allowed request: %s %s", req.method, req.path)
-
-		// forward request headers to backend
-		if _, err := backend.Write(req.rawHeaders); err != nil {
-			return
-		}
-
-		// forward request body (if any) to backend
-		if req.bodyLen > 0 {
-			if _, err := io.CopyN(backend, clientReader, req.bodyLen); err != nil {
-				return
-			}
-		}
-
-		// read response from backend and forward to client
-		resp, err := readHTTPResponse(backendReader)
-		if err != nil {
-			return
-		}
-
-		if _, err := client.Write(resp.rawHeaders); err != nil {
-			return
-		}
-
-		if resp.bodyLen > 0 {
-			if _, err := io.CopyN(client, backendReader, resp.bodyLen); err != nil {
-				return
-			}
-		}
-
-		// check Connection header
-		if resp.closeConn {
-			return
-		}
-	}
-}
-
 // httpRequest holds parsed HTTP request metadata
 type httpRequest struct {
 	method     string
@@ -227,105 +162,57 @@ type httpResponse struct {
 	closeConn  bool
 }
 
-func readHTTPRequest(r *bufio.Reader) (*httpRequest, error) {
-	var hdr bytes.Buffer
-
-	// read request line
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	hdr.WriteString(line)
-
-	parts := strings.SplitN(strings.TrimSpace(line), " ", 3)
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid request line")
-	}
-
-	method := parts[0]
-	path := parts[1]
-
-	// read headers
-	bodyLen := int64(0)
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		hdr.WriteString(line)
-
-		if line == "\r\n" {
-			break
-		}
-
-		// parse Content-Length
-		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
-			lenStr := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "content-length:"))
-			if n, err := strconv.ParseInt(lenStr, 10, 64); err == nil {
-				bodyLen = n
-			}
+// stripVersionPrefix removes Docker API version prefix (e.g., /v1.40) from the path.
+// e.g., /v1.40/containers/json -> /containers/json
+func stripVersionPrefix(path string) string {
+	// match /vX.Y or /vX pattern at the start
+	if strings.HasPrefix(path, "/v") && len(path) > 2 {
+		// find the next slash after /vX.Y
+		parts := strings.SplitN(path[1:], "/", 2)
+		if len(parts) == 2 && isVersionSegment(parts[0]) {
+			return "/" + parts[1]
 		}
 	}
-
-	return &httpRequest{
-		method:     method,
-		path:       path,
-		rawHeaders: hdr.Bytes(),
-		bodyLen:    bodyLen,
-	}, nil
+	return path
 }
 
-func readHTTPResponse(r *bufio.Reader) (*httpResponse, error) {
-	var hdr bytes.Buffer
-
-	// read status line
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return nil, err
+// isVersionSegment checks if a segment looks like a Docker version (e.g., "v1.40", "v1.41")
+func isVersionSegment(s string) bool {
+	if !strings.HasPrefix(s, "v") {
+		return false
 	}
-	hdr.WriteString(line)
-
-	// read headers
-	bodyLen := int64(0)
-	closeConn := false
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return nil, err
+	rest := s[1:]
+	parts := strings.Split(rest, ".")
+	// should be v{major}.{minor} or v{major}
+	if len(parts) > 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
 		}
-		hdr.WriteString(line)
-
-		if line == "\r\n" {
-			break
-		}
-
-		// parse Content-Length
-		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
-			lenStr := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "content-length:"))
-			if n, err := strconv.ParseInt(lenStr, 10, 64); err == nil {
-				bodyLen = n
-			}
-		}
-
-		// check Connection header
-		if strings.HasPrefix(strings.ToLower(line), "connection:") {
-			connVal := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "connection:")))
-			if connVal == "close" {
-				closeConn = true
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
 			}
 		}
 	}
-
-	return &httpResponse{
-		rawHeaders: hdr.Bytes(),
-		bodyLen:    bodyLen,
-		closeConn:  closeConn,
-	}, nil
+	return len(parts) > 0
 }
 
+func isMethodAllowed(method string, allowed []string) bool {
+	for _, m := range allowed {
+		if method == m {
+			return true
+		}
+	}
+	return false
+}
 func isPathAllowed(path string, allowed []string) bool {
+	// strip version prefix before checking
+	normalizedPath := stripVersionPrefix(path)
 	for _, p := range allowed {
-		if strings.HasPrefix(path, p) {
+		if strings.HasPrefix(normalizedPath, p) {
 			return true
 		}
 	}
