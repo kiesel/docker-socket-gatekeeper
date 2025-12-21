@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,7 +31,7 @@ func main() {
 	allowVolumes := flag.Bool("allow-volumes", false, "allow /volumes/* paths")
 	allowNetworks := flag.Bool("allow-networks", false, "allow /networks/* paths")
 	allowSwarm := flag.Bool("allow-swarm", false, "allow swarm APIs (/swarm,/services,/nodes,/secrets,/configs)")
-	allowSystem := flag.Bool("allow-system", true, "allow system APIs (/info,/version,/_ping)")
+	allowSystem := flag.Bool("allow-system", false, "allow system APIs (/info,/version,/_ping)")
 	allowEvents := flag.Bool("allow-events", false, "allow /events")
 	allowExec := flag.Bool("allow-exec", false, "allow exec/attach APIs (/exec,/containers/*/exec,/containers/*/attach)")
 
@@ -143,50 +144,6 @@ func parseListen(s string) (proto, addr string, err error) {
 func handleConn(client net.Conn, allowed []string) {
 	defer client.Close()
 
-	// read request headers to inspect path
-	r := bufio.NewReader(client)
-	var hdr bytes.Buffer
-
-	// read first line (request line)
-	firstLine, err := r.ReadString('\n')
-	if err != nil {
-		return
-	}
-	hdr.WriteString(firstLine)
-
-	// read headers until empty line
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return
-		}
-		hdr.WriteString(line)
-		if line == "\r\n" {
-			break
-		}
-	}
-
-	parts := strings.SplitN(strings.TrimSpace(firstLine), " ", 3)
-	path := ""
-	if len(parts) >= 2 {
-		path = parts[1]
-	}
-
-	allowedMatch := false
-	for _, p := range allowed {
-		if strings.HasPrefix(path, p) {
-			allowedMatch = true
-			break
-		}
-	}
-
-	if !allowedMatch {
-		// deny
-		resp := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-		client.Write([]byte(resp))
-		return
-	}
-
 	backend, err := net.Dial("unix", dockerSock)
 	if err != nil {
 		log.Printf("dial docker socket: %v", err)
@@ -194,27 +151,183 @@ func handleConn(client net.Conn, allowed []string) {
 	}
 	defer backend.Close()
 
-	// forward the buffered request (request line + headers)
-	if _, err := backend.Write(hdr.Bytes()); err != nil {
-		return
+	clientReader := bufio.NewReader(client)
+	backendReader := bufio.NewReader(backend)
+
+	// relay loop: continuously validate and forward requests
+	for {
+		// read request from client
+		req, err := readHTTPRequest(clientReader)
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			log.Printf("error reading request: %v", err)
+			return
+		}
+
+		// check if path is allowed
+		if !isPathAllowed(req.path, allowed) {
+			log.Printf("denied request: %s %s (path not allowed)", req.method, req.path)
+			// send 403 and close
+			forbidden := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+			client.Write([]byte(forbidden))
+			return
+		}
+
+		log.Printf("allowed request: %s %s", req.method, req.path)
+
+		// forward request headers to backend
+		if _, err := backend.Write(req.rawHeaders); err != nil {
+			return
+		}
+
+		// forward request body (if any) to backend
+		if req.bodyLen > 0 {
+			if _, err := io.CopyN(backend, clientReader, req.bodyLen); err != nil {
+				return
+			}
+		}
+
+		// read response from backend and forward to client
+		resp, err := readHTTPResponse(backendReader)
+		if err != nil {
+			return
+		}
+
+		if _, err := client.Write(resp.rawHeaders); err != nil {
+			return
+		}
+
+		if resp.bodyLen > 0 {
+			if _, err := io.CopyN(client, backendReader, resp.bodyLen); err != nil {
+				return
+			}
+		}
+
+		// check Connection header
+		if resp.closeConn {
+			return
+		}
+	}
+}
+
+// httpRequest holds parsed HTTP request metadata
+type httpRequest struct {
+	method     string
+	path       string
+	rawHeaders []byte
+	bodyLen    int64
+}
+
+// httpResponse holds parsed HTTP response metadata
+type httpResponse struct {
+	rawHeaders []byte
+	bodyLen    int64
+	closeConn  bool
+}
+
+func readHTTPRequest(r *bufio.Reader) (*httpRequest, error) {
+	var hdr bytes.Buffer
+
+	// read request line
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	hdr.WriteString(line)
+
+	parts := strings.SplitN(strings.TrimSpace(line), " ", 3)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid request line")
 	}
 
-	// wire client <-> backend: copy remaining buffered data and then ongoing streams
-	done := make(chan struct{}, 2)
+	method := parts[0]
+	path := parts[1]
 
-	go func() {
-		if _, err := io.Copy(backend, r); err != nil {
-			// ignore
+	// read headers
+	bodyLen := int64(0)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil, err
 		}
-		done <- struct{}{}
-	}()
+		hdr.WriteString(line)
 
-	go func() {
-		if _, err := io.Copy(client, backend); err != nil {
-			// ignore
+		if line == "\r\n" {
+			break
 		}
-		done <- struct{}{}
-	}()
 
-	<-done
+		// parse Content-Length
+		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
+			lenStr := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "content-length:"))
+			if n, err := strconv.ParseInt(lenStr, 10, 64); err == nil {
+				bodyLen = n
+			}
+		}
+	}
+
+	return &httpRequest{
+		method:     method,
+		path:       path,
+		rawHeaders: hdr.Bytes(),
+		bodyLen:    bodyLen,
+	}, nil
+}
+
+func readHTTPResponse(r *bufio.Reader) (*httpResponse, error) {
+	var hdr bytes.Buffer
+
+	// read status line
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	hdr.WriteString(line)
+
+	// read headers
+	bodyLen := int64(0)
+	closeConn := false
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		hdr.WriteString(line)
+
+		if line == "\r\n" {
+			break
+		}
+
+		// parse Content-Length
+		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
+			lenStr := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "content-length:"))
+			if n, err := strconv.ParseInt(lenStr, 10, 64); err == nil {
+				bodyLen = n
+			}
+		}
+
+		// check Connection header
+		if strings.HasPrefix(strings.ToLower(line), "connection:") {
+			connVal := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "connection:")))
+			if connVal == "close" {
+				closeConn = true
+			}
+		}
+	}
+
+	return &httpResponse{
+		rawHeaders: hdr.Bytes(),
+		bodyLen:    bodyLen,
+		closeConn:  closeConn,
+	}, nil
+}
+
+func isPathAllowed(path string, allowed []string) bool {
+	for _, p := range allowed {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
