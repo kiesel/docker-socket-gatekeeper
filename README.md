@@ -25,3 +25,26 @@ Run on TCP (example port 2375):
 ```bash
 ./docker-proxy -listen tcp:127.0.0.1:2375
 ```
+
+Path allow flags
+-----------------
+
+This proxy only forwards requests whose API path matches an allowed prefix. Flags are provided to enable common Docker API areas or custom prefixes:
+
+- `-allow-containers` : allow `/containers/*` paths
+- `-allow-images` : allow `/images/*` paths
+- `-allow-volumes` : allow `/volumes/*` paths
+- `-allow-networks` : allow `/networks/*` paths
+- `-allow-swarm` : allow swarm endpoints (`/swarm`, `/services`, `/nodes`, `/secrets`, `/configs`)
+- `-allow-events` : allow `/events`
+- `-allow-exec` : allow exec/attach APIs (`/exec`, `/containers/*`)
+- `-allow-system` : allow system endpoints (`/_ping`, `/version`, `/info`) — enabled by default
+- `-allow` : comma-separated custom prefixes (e.g. `/plugins,/build`)
+
+Example: allow containers and images:
+
+```bash
+./docker-proxy -allow-containers -allow-images
+```
+
+If a request path doesn't match any allowed prefix the proxy returns `403 Forbidden`.
