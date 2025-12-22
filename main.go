@@ -18,7 +18,7 @@ import (
 
 func main() {
 	listen := flag.String("listen", "unix:///var/run/docker-gatekeeper.sock", "listen address: use scheme prefix 'unix://' or 'tcp://'; default unix:///var/run/docker-gatekeeper.sock")
-	dockerSock := flag.String("docker-sock", "/var/run/docker.sock", "path to docker unix socket")
+	dockerSock := flag.String("docker-sock", "unix:///var/run/docker.sock", "docker socket address: use unix://path or tcp://host:port")
 
 	// path allow flags
 	allowRead := flag.Bool("allow-read", true, "allow read-only operations (GET, HEAD) on all paths")
@@ -80,6 +80,11 @@ func main() {
 		log.Fatalf("invalid listen: %v", err)
 	}
 
+	dockerProto, dockerAddr, err := parseListen(*dockerSock)
+	if err != nil {
+		log.Fatalf("invalid docker-sock: %v", err)
+	}
+
 	ln, err := net.Listen(proto, addr)
 	if err != nil {
 		log.Fatalf("listen %s %s: %v", proto, addr, err)
@@ -90,7 +95,7 @@ func main() {
 
 	proxy.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return net.Dial("unix", *dockerSock)
+			return net.Dial(dockerProto, dockerAddr)
 		},
 	}
 
@@ -123,9 +128,6 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
-		if proto == "unix" {
-			os.Remove(addr)
-		}
 	}()
 
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {

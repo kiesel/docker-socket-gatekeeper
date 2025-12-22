@@ -32,7 +32,7 @@ Run on TCP (example port 2375):
 If you plan to use docker-socket-gatekeeper in front of traefik, these options provide sufficient (and safe, hopefully) permissions:
 
 ```shell
-$ ./docker-gatekeeper -listen unix:///path/to/docker.sock -docker-sock /var/run/docker.sock \
+$ ./docker-gatekeeper -listen unix:///path/to/docker.sock -docker-sock unix:///var/run/docker.sock \
   -allow-read \
   -allow-system \
   -allow-containers \
@@ -63,7 +63,7 @@ services:
     user: 1000:1000
     image: ghcr.io/kiesel/docker-socket-gatekeeper:latest
     command:
-      - -docker-sock=/var/run/docker.sock
+      - -docker-sock=unix:///var/run/docker.sock
       - -listen=unix:///var/run/docker-gatekeeper/docker.sock
       - -allow-read
       - -allow-system
