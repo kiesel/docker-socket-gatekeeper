@@ -18,6 +18,9 @@ import (
 	"time"
 )
 
+// Version is the build version of this program. Set at build time with -ldflags "-X main.Version=1.2.3"
+var Version = "dev"
+
 func main() {
 	listen := flag.String("listen", "unix:///var/run/docker-gatekeeper.sock", "listen address: use scheme prefix 'unix://' or 'tcp://'; default unix:///var/run/docker-gatekeeper.sock")
 	dockerSock := flag.String("docker-sock", "unix:///var/run/docker.sock", "docker socket address: use unix://path or tcp://host:port")
@@ -38,7 +41,8 @@ func main() {
 
 	flag.Parse()
 
-	log.Printf("starting docker socket gatekeeper; target=%s; listen=%s", *dockerSock, *listen)
+	log.Printf("starting docker gatekeeper %s\n", Version)
+	log.Printf("proxying source %s via %s", *dockerSock, *listen)
 
 	// build allowed prefixes
 	allowed := make([]string, 0)
