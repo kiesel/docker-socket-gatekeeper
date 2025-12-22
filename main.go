@@ -38,7 +38,7 @@ func main() {
 
 	flag.Parse()
 
-	log.Printf("starting docker socket proxy; target=%s; listen=%s", *dockerSock, *listen)
+	log.Printf("starting docker socket gatekeeper; target=%s; listen=%s", *dockerSock, *listen)
 
 	// build allowed prefixes
 	allowed := make([]string, 0)
