@@ -77,15 +77,8 @@ func main() {
 	log.Printf("allowed operations: %v", allowedOps)
 	log.Printf("allowed path prefixes: %v", allowed)
 
-	proto, addr, err := parseListen(*listen)
-	if err != nil {
-		log.Fatalf("invalid listen: %v", err)
-	}
-
-	dockerProto, dockerAddr, err := parseListen(*dockerSock)
-	if err != nil {
-		log.Fatalf("invalid docker-sock: %v", err)
-	}
+	proto, addr := parseListen(*listen)
+	dockerProto, dockerAddr := parseListen(*dockerSock)
 
 	// Test Docker connection and fetch version
 	if err := testDockerConnection(dockerProto, dockerAddr); err != nil {
@@ -142,15 +135,15 @@ func main() {
 	}
 }
 
-func parseListen(s string) (proto, addr string, err error) {
+func parseListen(s string) (proto string, addr string) {
 	// Expect scheme-style prefixes: unix://path and tcp://host:port
 	if after, ok := strings.CutPrefix(s, "unix://"); ok {
-		return "unix", after, nil
+		return "unix", after
 	}
 	if after, ok := strings.CutPrefix(s, "tcp://"); ok {
-		return "tcp", after, nil
+		return "tcp", after
 	}
-	return "", "", fmt.Errorf("unknown listen prefix; use unix://path or tcp://host:port")
+	return "tcp", s
 }
 
 // stripVersionPrefix removes Docker API version prefix (e.g., /v1.40) from the path.
