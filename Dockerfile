@@ -12,4 +12,4 @@ FROM scratch
 COPY --from=builder /build/docker-gatekeeper /docker-gatekeeper
 
 ENTRYPOINT ["/docker-gatekeeper"]
-CMD ["-listen", "unix:/run/docker-gatekeeper.sock"]
+CMD ["-listen", "unix:///run/docker-gatekeeper.sock"]

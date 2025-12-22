@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	listen := flag.String("listen", "unix:/var/run/docker-proxy.sock", "listen address: prefix with 'unix:' or 'tcp:'; default unix:/var/run/docker-proxy.sock")
+	listen := flag.String("listen", "unix:///var/run/docker-gatekeeper.sock", "listen address: use scheme prefix 'unix://' or 'tcp://'; default unix:///var/run/docker-gatekeeper.sock")
 	dockerSock := flag.String("docker-sock", "/var/run/docker.sock", "path to docker unix socket")
 
 	// path allow flags
@@ -134,17 +134,14 @@ func main() {
 }
 
 func parseListen(s string) (proto, addr string, err error) {
-	if after, ok := strings.CutPrefix(s, "unix:"); ok {
+	// Expect scheme-style prefixes: unix://path and tcp://host:port
+	if after, ok := strings.CutPrefix(s, "unix://"); ok {
 		return "unix", after, nil
 	}
-	if after, ok := strings.CutPrefix(s, "tcp:"); ok {
+	if after, ok := strings.CutPrefix(s, "tcp://"); ok {
 		return "tcp", after, nil
 	}
-	// fallback: if it contains ':' treat as tcp host:port
-	if strings.Contains(s, ":") {
-		return "tcp", s, nil
-	}
-	return "", "", fmt.Errorf("unknown listen prefix; use unix:/path or tcp:host:port")
+	return "", "", fmt.Errorf("unknown listen prefix; use unix://path or tcp://host:port")
 }
 
 // stripVersionPrefix removes Docker API version prefix (e.g., /v1.40) from the path.

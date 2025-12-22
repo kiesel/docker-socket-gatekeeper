@@ -24,19 +24,19 @@ Run (default unix listener):
 Run on TCP (example port 2375):
 
 ```bash
-./docker-gatekeeper -listen tcp:127.0.0.1:2375
+./docker-gatekeeper -listen tcp://127.0.0.1:2375
 ```
 
 ### Options for traefik
 
-If you plan to use docker-socket-gatekeeper infront of traefik, these options provide sufficient (and safe, hopefully) permissions:
+If you plan to use docker-socket-gatekeeper in front of traefik, these options provide sufficient (and safe, hopefully) permissions:
 
 ```shell
-$ ./docker-gatekeeper -listen unix://./docker.sock -docker-sock /var/run/docker.sock \
- -allow-read \
- -allow-system \
- -allow-containers \
- -allow-events
+$ ./docker-gatekeeper -listen unix:///path/to/docker.sock -docker-sock /var/run/docker.sock \
+  -allow-read \
+  -allow-system \
+  -allow-containers \
+  -allow-events
 ```
 
 ## Run w/ traefik in Docker compose
@@ -64,7 +64,7 @@ services:
     image: ghcr.io/kiesel/docker-socket-gatekeeper:latest
     command:
       - -docker-sock=/var/run/docker.sock
-      - -listen=unix:/var/run/docker-gatekeeper/docker.sock
+      - -listen=unix:///var/run/docker-gatekeeper/docker.sock
       - -allow-read
       - -allow-system
       - -allow-containers
@@ -76,6 +76,13 @@ services:
     volumes:
       - docker-gatekeeper:/var/run/docker-gatekeeper/:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  docker-gatekeeper:
+    driver_opts:
+      type: 'tmpfs'
+      device: 'tmpfs'
+      o: 'size=1m,uid=1000,gid=1000'
 ```
 
 docker-gatekeeper can run rootless (`user: 1000:1000`), when it is added to the Docker group with `group_add`.
