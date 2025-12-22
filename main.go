@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -83,6 +85,11 @@ func main() {
 	dockerProto, dockerAddr, err := parseListen(*dockerSock)
 	if err != nil {
 		log.Fatalf("invalid docker-sock: %v", err)
+	}
+
+	// Test Docker connection and fetch version
+	if err := testDockerConnection(dockerProto, dockerAddr); err != nil {
+		log.Fatalf("docker connection test failed: %v", err)
 	}
 
 	ln, err := net.Listen(proto, addr)
@@ -200,4 +207,43 @@ func isPathAllowed(path string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// testDockerConnection validates the Docker socket is reachable and logs version info
+func testDockerConnection(proto, addr string) error {
+	testConn, err := net.Dial(proto, addr)
+	if err != nil {
+		return fmt.Errorf("cannot connect to docker socket %s://%s: %w", proto, addr, err)
+	}
+	defer testConn.Close()
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return testConn, nil
+			},
+		},
+	}
+
+	resp, err := client.Get("http://docker/version")
+	if err != nil {
+		return fmt.Errorf("cannot reach /version endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("docker /version returned status %d", resp.StatusCode)
+	}
+
+	var versionInfo map[string]interface{}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &versionInfo); err != nil {
+		return fmt.Errorf("failed to parse docker /version response: %w", err)
+	}
+
+	version, _ := versionInfo["Version"].(string)
+	arch, _ := versionInfo["Arch"].(string)
+	log.Printf("connected to docker %s (%s)", version, arch)
+
+	return nil
 }
