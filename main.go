@@ -74,8 +74,8 @@ func main() {
 		allowed = append(allowed, "/exec")
 	}
 
-	log.Printf("Allowed operations: %v", allowedOps)
-	log.Printf("Allowed path prefixes: %v", allowed)
+	log.Printf("allowed operations: %v", allowedOps)
+	log.Printf("allowed path prefixes: %v", allowed)
 
 	proto, addr, err := parseListen(*listen)
 	if err != nil {
@@ -109,17 +109,17 @@ func main() {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isMethodAllowed(r.Method, allowedOps) {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			log.Printf("Received request %s %s -> DENY (method not allowed)", r.Method, r.URL.Path)
+			log.Printf("DENY  %-5s %s (method not allowed)", r.Method, r.URL.Path)
 			return
 		}
 
 		if !isPathAllowed(r.URL.Path, allowed) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
-			log.Printf("Received request %s %s -> DENY (path not allowed)", r.Method, r.URL.Path)
+			log.Printf("DENY  %-5s %s (path not allowed)", r.Method, r.URL.Path)
 			return
 		}
 
-		log.Printf("Received request %s %s -> ALLOW", r.Method, r.URL.Path)
+		log.Printf("ALLOW %-5s %s", r.Method, r.URL.Path)
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -235,7 +235,7 @@ func testDockerConnection(proto, addr string) error {
 		return fmt.Errorf("docker /version returned status %d", resp.StatusCode)
 	}
 
-	var versionInfo map[string]interface{}
+	var versionInfo map[string]any
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &versionInfo); err != nil {
 		return fmt.Errorf("failed to parse docker /version response: %w", err)
