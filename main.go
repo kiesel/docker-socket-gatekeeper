@@ -116,7 +116,7 @@ func main() {
 			return
 		}
 
-		log.Printf("ALLOW %-5s %s", r.Method, r.URL.Path)
+		// log.Printf("ALLOW %-5s %s", r.Method, r.URL.Path)
 		proxy.ServeHTTP(w, r)
 	})
 
