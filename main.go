@@ -45,8 +45,8 @@ func main() {
 	log.Printf("proxying source %s via %s", *dockerSock, *listen)
 
 	// build allowed prefixes
-	allowed := make([]string, 0)
-	allowedOps := make([]string, 0)
+	var allowed []string
+	var allowedOps []string
 	if *allowRead {
 		allowedOps = append(allowedOps, "GET", "HEAD")
 	}
@@ -116,7 +116,6 @@ func main() {
 			return
 		}
 
-		// log.Printf("ALLOW %-5s %s", r.Method, r.URL.Path)
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -131,7 +130,9 @@ func main() {
 		log.Printf("shutting down")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
 	}()
 
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -185,7 +186,7 @@ func isVersionSegment(s string) bool {
 			}
 		}
 	}
-	return len(parts) > 0
+	return true
 }
 
 func isMethodAllowed(method string, allowed []string) bool {
@@ -196,6 +197,7 @@ func isMethodAllowed(method string, allowed []string) bool {
 	}
 	return false
 }
+
 func isPathAllowed(path string, allowed []string) bool {
 	normalizedPath := stripVersionPrefix(path)
 	for _, p := range allowed {
