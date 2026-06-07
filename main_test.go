@@ -275,45 +275,46 @@ func TestParseListen(t *testing.T) {
 		input    string
 		expProto string
 		expAddr  string
-		expError bool
 	}{
 		{
 			name:     "unix socket",
-			input:    "unix:/var/run/docker.sock",
+			input:    "unix:///var/run/docker.sock",
 			expProto: "unix",
 			expAddr:  "/var/run/docker.sock",
 		},
 		{
 			name:     "tcp with address",
-			input:    "tcp:127.0.0.1:2375",
+			input:    "tcp://127.0.0.1:2375",
 			expProto: "tcp",
 			expAddr:  "127.0.0.1:2375",
 		},
 		{
-			name:     "fallback tcp (colon present)",
+			name:     "fallback tcp (bare host:port)",
 			input:    "0.0.0.0:2375",
 			expProto: "tcp",
 			expAddr:  "0.0.0.0:2375",
 		},
 		{
-			name:     "invalid no prefix",
+			name:     "fallback tcp (bare hostname)",
 			input:    "localhost",
-			expError: true,
+			expProto: "tcp",
+			expAddr:  "localhost",
 		},
 		{
-			name:     "invalid empty",
+			name:     "fallback tcp (empty string)",
 			input:    "",
-			expError: true,
+			expProto: "tcp",
+			expAddr:  "",
 		},
 		{
 			name:     "unix with relative path",
-			input:    "unix:./docker.sock",
+			input:    "unix://./docker.sock",
 			expProto: "unix",
 			expAddr:  "./docker.sock",
 		},
 		{
 			name:     "tcp localhost",
-			input:    "tcp:localhost:9999",
+			input:    "tcp://localhost:9999",
 			expProto: "tcp",
 			expAddr:  "localhost:9999",
 		},
@@ -321,17 +322,7 @@ func TestParseListen(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			proto, addr, err := parseListen(tt.input)
-			if tt.expError {
-				if err == nil {
-					t.Errorf("parseListen(%q) expected error, got none", tt.input)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("parseListen(%q) unexpected error: %v", tt.input, err)
-				return
-			}
+			proto, addr := parseListen(tt.input)
 			if proto != tt.expProto {
 				t.Errorf("parseListen(%q) proto = %q, want %q", tt.input, proto, tt.expProto)
 			}

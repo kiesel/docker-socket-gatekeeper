@@ -3,3 +3,4 @@ docker-gatekeeper
 
 # Go artifacts
 /dist
+/docker-socket-gatekeeper
